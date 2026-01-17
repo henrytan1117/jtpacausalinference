@@ -14,12 +14,17 @@ To ensure a robust policy recommendation, the analysis followed these logical st
 (1) Selection of Treatment: Focused on eligibility (randomly assigned) rather than participation (endogenous) to preserve the Randomized Controlled Trial (RCT) framework.
 
 (2) Assumption Validation: Confirmed the Overlap and Unconfoundedness assumptions using propensity score distributions and covariance balancing checks.
+- Since we cannot check unconfounded, we managed to check overlapping condition by making sure that the propensity score is strictly between 0 and 1, as shown in the diagram below.
+![Propensity Score](propensity_score.png)
+
+- In addition, we conduct covariance balancing checks to confirm that the dataset is collected via Randomized Control Trial (RCT), by making sure the distribution of covariates is similar within the treated and the control group.
+![Covariance Balancing Check](balance_check.png)
 
 (3) Model Selection: Moved beyond simple linear regressions to Double Debiased Machine Learning (DDML) to handle high-dimensional covariates and potential non-linearities.
 
 In particular:
 - Identification Strategy: Doubly Robust Estimation (combining Outcome Regression and Propensity Scores).
-- Machine Learning: Lasso, Random Forest, Decision Trees, and Neural Networks for nuisance parameter estimation.
+- Machine Learning: Lasso, Random Forest, Decision Trees, and Neural Networks for nuisance parameter estimation under the homogeneous and heterogeneous treatment effect model.
 - Techniques: 3-fold cross-fitting and sample splitting to eliminate over-fitting bias.
 - Subgroup Analysis: Conditional Average Treatment Effect (CATE) analysis across 12 unique demographic clusters.
 
@@ -33,12 +38,16 @@ The dataset originates from the National JTPA Study (1987-1989), covering 20+ co
 
 ## Results & Key Findings
 (1) Main Result: The estimated ATE for program eligibility is $1,324.04.
+- The ATE estimates under the homogeneous and heterogeneous treatment effects model do not differ so much from each other.
+![ATE Result](ate_results.png)
 
 (2) Net Social Impact: After accounting for the $774 service cost per assignment, the program yields a net positive return of ~$550 per person.
 
 (3) Best Performing Model: Lasso provided the most stable estimates with the lowest Standard Error (357.12).
 
 (4) Heterogeneity: Subgroup analysis revealed that the program is most effective for individuals with exactly 12 years of education who were working full-time (35-40 hours) prior to the program (Net ATE: $1,771.97).
+- In particular, we divide our data into 12 different non-overlapping subgroups using education and full-time working features. The ATE estimates for each subgroup are shown below:
+![Subgroup ATE Result](ate_subset.png)
 
 
 ## Discussion & Policy Implications
