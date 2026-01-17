@@ -49,8 +49,8 @@ While the program is generally effective, it is not a "one-size-fits-all" soluti
 
 
 ## Resources
-(1) jtpa.csv: The original JTPA dataset that was used in this study and analysis
-(2) jtpa_report.pdf & jtpa_report.md: The full academic report of the study
-(3) jtpa_slides.pdf: A summarized version of the full academic report, used for presentation and sharing session
-(4) jtpa_code.rmd: The RMD R file containing the codes used to replicate the results
+- jtpa.csv: The original JTPA dataset that was used in this study and analysis.
+- jtpa_report.pdf & jtpa_report.md: The full academic report of the study.
+- jtpa_slides.pdf: A summarized version of the full academic report, used for presentation and sharing session.
+- jtpa_code.rmd: The RMD R file containing the codes used to replicate the results.
 
