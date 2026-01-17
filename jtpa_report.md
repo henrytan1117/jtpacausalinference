@@ -1,4 +1,4 @@
-# **ECON 4140 Final Report**
+# **Final Report**
 
 # **“The effect of JTPA job training program on workers’ earnings”**
 
