@@ -62,4 +62,8 @@ While the program is generally effective, it is not a "one-size-fits-all" soluti
 - jtpa_report.pdf & jtpa_report.md: The full academic report of the study.
 - jtpa_slides.pdf: A summarized version of the full academic report, used for presentation and sharing session.
 - jtpa_code.rmd: The RMD R file containing the codes used to replicate the results.
+- 
+
+## Acknowledgement
+This project was a joint effort of Henry Tan (Cornell '27) and Ashley Effendy (Cornell '26).
 
