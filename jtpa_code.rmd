@@ -1,0 +1,683 @@
+---
+title: "Econometrics Game Master"
+author: "Henry Tan, Ashley Effendy"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, 
+                      error = TRUE, 
+                      tidy.opts=list(width.cutoff=70), 
+                      tidy  = TRUE,
+                      eval = TRUE, collapse = TRUE,comment=NA)
+
+# This is the Master File containing all codes for reproducing the results from Econometrics Game Final Project
+# Load all libraries
+library(ggplot2)
+library(patchwork)
+library(lmtest)
+library(sandwich)
+library(DoubleML)
+library(mlr3learners)
+library(mlr3)
+library(ranger)
+library(data.table)
+library(xtable)
+```
+
+
+```{r}
+# Load dataset
+# Dataset inspection
+jtpa <- read.csv("/Users/henrytan/Downloads/jtpa.csv")
+
+# Checking the data structure
+str(jtpa)
+```
+
+# Overlap and Covariate Balancing Check to support RCT
+
+```{r}
+# Define Y, D, X
+# In this case, we decided to include all covariates 
+# We treated binary variables with non-binary values (hsorged, married, wkless13) as continuous
+
+# Scale continuous variable
+jtpa$age <- scale(jtpa$age)
+jtpa$bfhrswrk <- scale(jtpa$bfhrswrk)
+jtpa$bfyrearn <- scale(jtpa$bfyrearn)
+jtpa$bfwage <- scale(jtpa$bfwage)
+jtpa$hsorged <- scale(jtpa$hsorged)
+jtpa$bfeduca <- scale(jtpa$bfeduca)
+jtpa$married <- scale(jtpa$married)
+jtpa$wkless13 <- scale(jtpa$wkless13)
+
+# Construct y,d,x
+y <- jtpa$earnings
+d <- jtpa$D
+
+# We include all 20 covariates, excluding index, recid since they are irrelevant
+x <- model.matrix(~ male + age + age2225 + age2629 + age3035 + age3644 + age4554 + black + hispanic + married + bfeduca + hsorged + class_tr + ojt_jsa + bfhrswrk + wkless13 + bfyrearn + bfwage + f2sms + afdc, data=jtpa)[,-1]
+
+# Conducting logistics regression to estimate propensity score
+
+logistic.regression <- glm(d~x, family='binomial')
+p_score <- logistic.regression$fitted.values
+
+# Plot the histogram for treated
+
+hist(p_score[d==1], freq = FALSE, col = "lightcoral",
+     border = NA, xlab = "",
+     ylab = "", yaxt = "n", breaks = 30,
+     main = "Propensity Score Distribution for Treated (Red) and Control (Blue)",
+     xlim = c(0, 1), ylim = c(0, 20))
+
+# Plot the histogram for control
+
+hist(p_score[d==0], freq = FALSE, col = "skyblue",
+     border = NA, xlab = "",
+     ylab = "", yaxt = "n", breaks = 30,
+     main = "Propensity Score Distribution",
+     xlim = c(0, 1), ylim = c(0, 20), add=TRUE)
+
+# Covariate balancing check based on propensity score stratification
+# We try propensity score stratification, but failed.
+# We try the second method, using IPW estimator
+
+# Build IPW estimator function
+
+ipw.est <- function(d, y, x, truncps = c(0, 1))
+{
+  ##fit propensity score
+  pscore   <- glm(d ~ x, family = binomial)$fitted.values
+  
+  ##only use units that have estimated propensity score in the interval c(0,1)##
+  y.trun       <- y[which(p_score>= truncps[1] & p_score <= truncps[2])]
+  x.trun        <- x[which(p_score>= truncps[1] & p_score <= truncps[2]),]
+  pscore.trun   <- p_score[which(p_score>= truncps[1] & p_score <= truncps[2])]
+  d.trun        <- d[which(p_score>= truncps[1] & p_score <= truncps[2])]
+  
+  ##two versions of the ipw estimators##
+  ace.ipw0 <- mean(d.trun*y.trun/pscore.trun - (1 - d.trun)*y.trun/(1 - pscore.trun))
+  ace.ipw  <- mean(d.trun*y.trun/pscore.trun)/mean(d.trun/pscore.trun) -
+    mean((1 - d.trun)*y.trun/(1 - pscore.trun))/mean((1 - d.trun)/(1 - pscore.trun))
+  
+  point.est <- as.matrix(round(c(ace.ipw0, ace.ipw),4))
+  rownames(point.est) <- c("HT", "Hajek")
+  colnames(point.est) <- c("est. ATE")
+  
+  return(point.est)
+}
+
+# Apply the IPW estimator function to balancing check
+
+balance.check.ipw <-function(px){
+  ipw.est(d, x[, px], x, truncps = c(0,1))}
+
+bcheck_all <-sapply(1:ncol(x),balance.check.ipw)
+
+dat_balance_ipw <- data.frame(est_HT = bcheck_all[1,],est_Hajek=bcheck_all[2,],
+                             cov = factor(1:20))
+
+dat_balance_ipw
+
+# For Hajek estimator
+g1 <- ggplot(dat_balance_ipw) +
+  geom_point(aes(x = cov,
+                 y = est_Hajek),
+             alpha = 0.6) +
+  geom_hline(aes(yintercept = 0),
+             alpha = 0.3) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank()) +
+  xlab("balance check based on Hajek weighting")
+
+
+# For the naive IPW estimator
+
+g2 <- ggplot(dat_balance_ipw) +
+  geom_point(aes(x = cov,
+                 y = est_HT),
+             alpha = 0.6) +
+  geom_hline(aes(yintercept = 0),
+             alpha = 0.3) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.y=element_blank()) +
+  xlab("balance check based on HT weighting")
+
+library(patchwork)
+g1 + g2
+```
+
+\newpage 
+
+# Estimate ATE
+
+```{r, include=FALSE}
+# We rerun our dataset to make sure we use original dataset for ATE estimation
+# Dataset inspection
+jtpa <- read.csv("/Users/henrytan/Downloads/jtpa.csv")
+
+# Checking the data structure
+str(jtpa)
+
+# Define Y, D, X
+# In this case, we decided to include all covariates. 
+
+# Construct y,d,x
+y <- jtpa$earnings
+d <- jtpa$D
+
+# We include all 20 covariates, excluding index, recid since they are irrelevant
+x <- model.matrix(~ male + age + age2225 + age2629 + age3035 + age3644 + age4554 + black + hispanic + married + bfeduca + hsorged + class_tr + ojt_jsa + bfhrswrk + wkless13 + bfyrearn + bfwage + f2sms + afdc, data=jtpa)[,-1]
+
+# Sidequest, we plot a bar chart to compare the number of treated and control units
+hist_D <- ggplot(jtpa, aes(x = d, fill = factor(d))) + geom_bar()
+hist_D
+
+# Baseline model: Simple difference in means estimator
+e1 <- jtpa[jtpa$D==1,]
+e0 <- jtpa[jtpa$D==0,]
+ATE.simple <- mean(e1$earnings)-mean(e0$earnings)
+ATE.simple
+
+# We use simple linear regression to get Simple difference in means estimator
+lm.fit.simple <- lm(earnings ~ D, data=jtpa)
+SLR.report <- coeftest(lm.fit.simple, vcov=vcovHC(lm.fit.simple, type="HC1"))
+
+# Check whether the linear regression yield the same results
+print(round(ATE.simple,5) == round(SLR.report[2,1],5))
+
+# Yes, they are the same, hence we can use the regression output as our standard error output
+SLR.report[2,2]
+
+# Estimate RMSE of y for Simple Linear Regression
+y_hat <- predict(lm.fit.simple)
+simple_y <- sqrt(mean((y-y_hat)^2)) 
+simple_y
+```
+
+
+## Double ML for heterogeneous treatment effect model
+
+
+```{r}
+# Double ML for heterogeneous treatment effect
+
+# Construct the dataset for double ML
+
+# New data frame for ML input
+model_flex <- data.table(earnings=y,D=d,x)
+x_cols <- colnames(model_flex)[-c(1,2)]
+data_ml <- DoubleMLData$new(data=model_flex, y_col = "earnings", d_cols = "D", x_cols=x_cols)
+
+p <- dim(model_flex)[2]-2
+p
+
+set.seed(111)
+
+## Suppress all messaging except warnings##
+lgr::get_logger("mlr3")$set_threshold("warn") 
+
+
+# ML 1: Lasso
+# Conducting lasso with penalty term
+lasso <- lrn("regr.cv_glmnet",nfolds = 10, s = "lambda.min")
+lasso_class <- lrn("classif.cv_glmnet", nfolds = 10, s = "lambda.min")
+
+# Create machine learning object
+dml_irm <- DoubleMLIRM$new(data_ml, ml_g = lasso, 
+                          ml_m = lasso_class, 
+                          trimming_threshold = 0.01, n_folds=3)
+
+# Store predictions
+dml_irm$fit(store_predictions=TRUE)
+
+# Lasso: ATE and standard error
+dml_irm$summary()
+lasso_irm <- dml_irm$coef
+lasso_std_irm <- dml_irm$se
+lasso_irm
+lasso_std_irm
+
+# Predictions using all data to check the performance of the model
+dml_irm$params_names()
+
+# True observation
+y <- jtpa$earnings
+d <- jtpa$D
+g0_hat <- as.matrix(dml_irm$predictions$ml_g0) # predictions of g_0(D=0, X)
+g1_hat <- as.matrix(dml_irm$predictions$ml_g1) # predictions of g_0(D=1, X)
+g_hat <- d*g1_hat+(1-d)*g0_hat
+m_hat <- as.matrix(dml_irm$predictions$ml_m) # predictions of m_o (propensity score)
+
+
+# Cross-fitted RMSE: outcome
+y <- as.matrix(jtpa$earnings) # true observations
+d <- as.matrix(jtpa$D) 
+lasso_y_irm <- sqrt(mean((y-g_hat)^2)) 
+lasso_y_irm
+
+# Cross-fitted RMSE: treatment (propensity score)
+lasso_d_irm <- sqrt(mean((d-m_hat)^2)) 
+lasso_d_irm
+
+
+
+# ML 2: Forest
+
+# Conducting forest methods
+randomForest <- lrn("regr.ranger")
+randomForest_class <- lrn("classif.ranger")
+
+#. Constructing ML dataset
+dml_irm_forest = DoubleMLIRM$new(data_ml, ml_g = randomForest, 
+                          ml_m = randomForest_class, 
+                          trimming_threshold = 0.01, n_folds=3)
+
+# Store predictions
+dml_irm_forest$fit(store_predictions=TRUE)
+
+# ATE and standard error
+dml_irm_forest$summary()
+forest_irm <- dml_irm_forest$coef
+forest_std_irm <- dml_irm_forest$se
+
+# Prediction error for performance assessment
+g0_hat <- as.matrix(dml_irm_forest$predictions$ml_g0) # predictions of g_0(D=0, X)
+g1_hat <- as.matrix(dml_irm_forest$predictions$ml_g1) # predictions of g_0(D=1, X)
+g_hat <- d*g1_hat+(1-d)*g0_hat # predictions of g_0
+m_hat <- as.matrix(dml_irm_forest$predictions$ml_m) # predictions of m_0
+
+# Cross-fitted RMSE: outcome
+y <- as.matrix(jtpa$earnings) # true observations
+d <- as.matrix(jtpa$D) 
+forest_y_irm <- sqrt(mean((y-g_hat)^2)) 
+forest_y_irm
+
+# Cross-fitted RMSE: treatment (propensity score)
+forest_d_irm <- sqrt(mean((d-m_hat)^2)) 
+forest_d_irm
+
+
+
+# ML 3: Trees
+
+trees <- lrn("regr.rpart")
+trees_class <- lrn("classif.rpart")
+
+dml_irm_tree <- DoubleMLIRM$new(data_ml, ml_g = trees, ml_m = trees_class, 
+                           trimming_threshold = 0.01, n_folds=3)
+
+dml_irm_tree$fit(store_predictions=TRUE)
+dml_irm_tree$summary()
+tree_irm <- dml_irm_tree$coef
+tree_std_irm <- dml_irm_tree$se
+
+# Prediction error
+g0_hat <- as.matrix(dml_irm_tree$predictions$ml_g0) # predictions of g_0(D=0, X)
+g1_hat <- as.matrix(dml_irm_tree$predictions$ml_g1) # predictions of g_0(D=1, X)
+g_hat <- d*g1_hat+(1-d)*g0_hat # predictions of g_0
+m_hat <- as.matrix(dml_irm_tree$predictions$ml_m) # predictions of m_0
+
+# Cross-fitted RMSE: outcome
+y <- as.matrix(jtpa$earnings) # true observations
+d <- as.matrix(jtpa$D) 
+tree_y_irm <- sqrt(mean((y-g_hat)^2)) 
+tree_y_irm
+
+# Cross-fitted RMSE: treatment (propensity score)
+tree_d_irm <- sqrt(mean((d-m_hat)^2)) 
+tree_d_irm
+
+
+
+# ML 4: Single-later neural network
+
+nn <- lrn("regr.nnet")
+nn_class <- lrn("classif.nnet")
+dml_irm_nn <- DoubleMLIRM$new(data_ml, ml_g = nn, ml_m = nn_class, 
+                                trimming_threshold = 0.01, n_folds=3)
+dml_irm_nn$fit(store_predictions=TRUE)
+dml_irm_nn$summary()
+nn_irm <- dml_irm_nn$coef
+nn_std_irm <- dml_irm_nn$se
+
+# Prediction error for performance assessment
+g0_hat <- as.matrix(dml_irm_nn$predictions$ml_g0) # predictions of g_0(D=0, X)
+g1_hat <- as.matrix(dml_irm_nn$predictions$ml_g1) # predictions of g_0(D=1, X)
+g_hat <- d*g1_hat+(1-d)*g0_hat # predictions of g_0
+m_hat <- as.matrix(dml_irm_nn$predictions$ml_m) # predictions of m_0
+
+# Cross-fitted RMSE: outcome
+y <- as.matrix(jtpa$earnings) # true observations
+d <- as.matrix(jtpa$D) 
+nn_y_irm <- sqrt(mean((y-g_hat)^2)) 
+nn_y_irm
+
+# Cross-fitted RMSE: treatment (propensity score)
+nn_d_irm <- sqrt(mean((d-m_hat)^2)) 
+nn_d_irm
+```
+
+
+## Double ML for homogeneous treatment effect model
+
+
+```{r}
+# Double ML for homogeneous treatment effect model
+
+# ML1: Lasso
+lasso <- lrn("regr.cv_glmnet",nfolds = 10, s = "lambda.min")
+lasso_class <- lrn("classif.cv_glmnet", nfolds = 10, s = "lambda.min")
+
+dml_plr <- DoubleMLPLR$new(data_ml, ml_l = lasso, ml_m = lasso_class, n_folds=3)
+dml_plr$fit(store_predictions=TRUE)
+dml_plr$summary()
+lasso_plr <- dml_plr$coef
+lasso_std_plr <- dml_plr$se
+
+# True observations
+y <- as.matrix(jtpa$earnings)
+d <- as.matrix(jtpa$D)
+
+# PLR predictions (cross-fitted / out-of-sample predictions stored by DoubleML)
+g_hat <- as.matrix(dml_plr$predictions$ml_l)   # E[Y | X] predicted by ml_g
+m_hat <- as.matrix(dml_plr$predictions$ml_m)   # propensity score predicted by ml_m
+
+# RMSE of outcome fit (g)
+lasso_y_plr <- sqrt(mean((y - g_hat)^2))
+lasso_y_plr
+
+# RMSE of treatment / propensity fit (m)
+lasso_d_plr <- sqrt(mean((d - m_hat)^2))
+lasso_d_plr
+
+
+
+# ML2: Forest
+randomForest <- lrn("regr.ranger")
+randomForest_class <- lrn("classif.ranger")
+
+dml_plr_forest = DoubleMLPLR$new(data_ml, ml_l = randomForest, 
+                                 ml_m = randomForest_class,  n_folds=3)
+dml_plr_forest$fit(store_predictions=TRUE)
+dml_plr_forest$summary()
+forest_plr <- dml_plr_forest$coef
+forest_std_plr <- dml_plr_forest$se
+
+# PLR predictions (cross-fitted / out-of-sample predictions stored by DoubleML)
+g_hat <- as.matrix(dml_plr_forest$predictions$ml_l)   # E[Y | X] predicted by ml_g
+m_hat <- as.matrix(dml_plr_forest$predictions$ml_m)   # propensity score predicted by ml_m
+
+# RMSE of outcome fit (g)
+forest_y_plr <- sqrt(mean((y - g_hat)^2))
+forest_y_plr
+
+# RMSE of treatment / propensity fit (m)
+forest_d_plr <- sqrt(mean((d - m_hat)^2))
+forest_d_plr
+
+
+
+# ML3: Trees
+trees <- lrn("regr.rpart")
+trees_class <- lrn("classif.rpart")
+dml_plr_tree <- DoubleMLPLR$new(data_ml, ml_l = trees, ml_m = trees_class, n_folds=3)
+dml_plr_tree$fit(store_predictions=TRUE)
+dml_plr_tree$summary()
+tree_plr <- dml_plr_tree$coef
+tree_std_plr <- dml_plr_tree$se
+
+# PLR predictions (cross-fitted / out-of-sample predictions stored by DoubleML)
+g_hat <- as.matrix(dml_plr_tree$predictions$ml_l)   # E[Y | X] predicted by ml_g
+m_hat <- as.matrix(dml_plr_tree$predictions$ml_m)   # propensity score predicted by ml_m
+
+# RMSE of outcome fit (g)
+tree_y_plr <- sqrt(mean((y - g_hat)^2))
+tree_y_plr
+
+# RMSE of treatment / propensity fit (m)
+tree_d_plr <- sqrt(mean((d - m_hat)^2))
+tree_d_plr
+
+
+
+# ML4: Single-Layer Neural Network
+nn <- lrn("regr.nnet")
+nn_class <- lrn("classif.nnet")
+dml_plr_nn <- DoubleMLPLR$new(data_ml, ml_l = nn, ml_m = nn_class,  n_folds=3)
+dml_plr_nn$fit(store_predictions=TRUE)
+dml_plr_nn$summary()
+nn_plr <- dml_plr_nn$coef
+nn_std_plr <- dml_plr_nn$se
+
+# PLR predictions (cross-fitted / out-of-sample predictions stored by DoubleML)
+g_hat <- as.matrix(dml_plr_nn$predictions$ml_l)   # E[Y | X] predicted by ml_g
+m_hat <- as.matrix(dml_plr_nn$predictions$ml_m)   # propensity score predicted by ml_m
+
+# RMSE of outcome fit (g)
+nn_y_plr <- sqrt(mean((y - g_hat)^2))
+nn_y_plr
+
+# RMSE of treatment / propensity fit (m)
+nn_d_plr <- sqrt(mean((d - m_hat)^2))
+nn_d_plr
+
+```
+
+\newpage
+
+## Results using heterogeneous treatment effect model
+
+
+|matrices|Simple Differences in Mean|Lasso|Forest|Trees|Single-Layer Neural Network
+|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|
+|ATE estimate|`r round(ATE.simple,5)`|`r round(lasso_irm,5)`|`r round(forest_irm,5)`|`r round(tree_irm,5)`|`r round(nn_irm,5)`|
+|Standard error|`r round(SLR.report[2,2],5)`|`r round(lasso_std_irm,5)`|`r round(forest_std_irm,5)`|`r round(tree_std_irm,5)`|`r round(nn_std_irm,5)`|
+|95% CI (Lower Bound)|`r round(ATE.simple-1.96*SLR.report[2,2],5)`|`r round(lasso_irm-1.96*lasso_std_irm,5)`|`r round(forest_irm-1.96*forest_std_irm,5)`|`r round(tree_irm-1.96*tree_std_irm,5)`|`r round(nn_irm-1.96*nn_std_irm,5)`|
+|95% CI (Upper Bound)|`r round(ATE.simple+1.96*SLR.report[2,2],5)`|`r round(lasso_irm+1.96*lasso_std_irm,5)`|`r round(forest_irm+1.96*forest_std_irm,5)`|`r round(tree_irm+1.96*tree_std_irm,5)`|`r round(nn_irm+1.96*nn_std_irm,5)`|
+|RMSE of outcome|`r round(simple_y,5)`|`r round(lasso_y_irm,5)`|`r round(forest_y_irm,5)`|`r round(tree_y_irm,5)`|`r round(nn_y_irm,5)`|
+|RMSE of propensity score|-|`r round(lasso_d_irm,5)`|`r round(forest_d_irm,5)`|`r round(tree_d_irm,5)`|`r round(nn_d_irm,5)`|
+
+
+## Results using homogeneous treatment effect model
+
+
+|matrices|Simple Differences in Mean|Lasso|Forest|Trees|Single-Layer Neural Network
+|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|
+|ATE estimate|`r round(ATE.simple,5)`|`r round(lasso_plr,5)`|`r round(forest_plr,5)`|`r round(tree_plr,5)`|`r round(nn_plr,5)`|
+|Standard error|`r round(SLR.report[2,2],5)`|`r round(lasso_std_plr,5)`|`r round(forest_std_plr,5)`|`r round(tree_std_plr,5)`|`r round(nn_std_plr,5)`|
+|95% CI (Lower Bound)|`r round(ATE.simple-1.96*SLR.report[2,2],5)`|`r round(lasso_plr-1.96*lasso_std_plr,5)`|`r round(forest_plr-1.96*forest_std_plr,5)`|`r round(tree_plr-1.96*tree_std_plr,5)`|`r round(nn_plr-1.96*nn_std_plr,5)`|
+|95% CI (Upper Bound)|`r round(ATE.simple+1.96*SLR.report[2,2],5)`|`r round(lasso_plr+1.96*lasso_std_plr,5)`|`r round(forest_plr+1.96*forest_std_plr,5)`|`r round(tree_plr+1.96*tree_std_plr,5)`|`r round(nn_plr+1.96*nn_std_plr,5)`|
+|RMSE of outcome|`r round(simple_y,5)`|`r round(lasso_y_plr,5)`|`r round(forest_y_plr,5)`|`r round(tree_y_plr,5)`|`r round(nn_y_plr,5)`|
+|RMSE of propensity score|-|`r round(lasso_d_plr,5)`|`r round(forest_d_plr,5)`|`r round(tree_d_plr,5)`|`r round(nn_d_plr,5)`|
+
+
+\newpage
+
+# Comparing ATE and standard error from homogeneous and heterogeneous effects models
+
+## ATE estimate comparison
+
+
+|matrices|Simple Differences in Mean|Lasso|Forest|Trees|Single-Layer Neural Network
+|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|
+|Heterogeneous|`r round(ATE.simple,5)`|`r round(lasso_irm,5)`|`r round(forest_irm,5)`|`r round(tree_irm,5)`|`r round(nn_irm,5)`|
+|Homogeneous|`r round(ATE.simple,5)`|`r round(lasso_plr,5)`|`r round(forest_plr,5)`|`r round(tree_plr,5)`|`r round(nn_plr,5)`|
+
+
+## ATE Standard error comparison
+
+
+|matrices|Simple Differences in Mean|Lasso|Forest|Trees|Single-Layer Neural Network
+|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|
+|Heterogeneous|`r round(SLR.report[2,2],5)`|`r round(lasso_std_irm,5)`|`r round(forest_std_irm,5)`|`r round(tree_std_irm,5)`|`r round(nn_std_irm,5)`|
+|Homogeneous|`r round(SLR.report[2,2],5)`|`r round(lasso_std_plr,5)`|`r round(forest_std_plr,5)`|`r round(tree_std_plr,5)`|`r round(nn_std_plr,5)`|
+
+
+\newpage
+
+# Estimate subgroup ATE
+
+```{r}
+# We rerun our dataset to make sure we use original dataset for ATE estimation
+# Dataset inspection
+jtpa <- read.csv("/Users/henrytan/Downloads/jtpa.csv")
+
+# Checking the data structure
+str(jtpa)
+
+# Define Y, D, X
+# In this case, we decided to include all covariates. 
+
+# Construct y,d,x
+y <- jtpa$earnings
+d <- jtpa$D
+
+# We include all 20 covariates, excluding index, recid since they are irrelevant
+x <- model.matrix(~ male + age + age2225 + age2629 + age3035 + age3644 + age4554 + black + hispanic + married + bfeduca + hsorged + class_tr + ojt_jsa + bfhrswrk + wkless13 + bfyrearn + bfwage + f2sms + afdc, data=jtpa)[,-1]
+
+# Build the model for \gamma1 and \gamma0
+
+y.treated <- y[which(d==1)]
+x.treated <- x[which(d==1),]
+
+# We use the whole dataset to estimate our coefficient b1
+outcome1 <- lm(y.treated~ x.treated) 
+
+y.control <- y[which(d==0)]
+x.control <- x[which(d==0),]
+
+# We use the whole dataset to estimate our coefficient b0
+outcome0 <- lm(y.control~ x.control)
+
+# Build the propensity score model
+logistic.regression <- glm(d ~ x, family = binomial)
+
+
+# Create a function that takes a dataset, compute number of treated and control units, gamma0, gamma1 and propensity score model
+
+doubly.robust <- function(data){
+  # Form y, d and x
+  y <- data$earnings
+  d <- data$D
+  x <- model.matrix(~ male + age + age2225 + age2629 + age3035 + age3644 + age4554 + black + hispanic + married + bfeduca + hsorged + class_tr + ojt_jsa + bfhrswrk + wkless13 + bfyrearn + bfwage + f2sms + afdc, data=data)[,-1]
+  
+  # Calculate the number of treated and controlled unit
+  treat <- sum(data$D==1)
+  control <- sum(data$D==0)
+  total <- treat + control
+  
+  # Compute nuisance
+  gamma1 <- cbind(rep(1,nrow(x)),x) %*% (outcome1$coefficients)
+  gamma0 <-  cbind(rep(1,nrow(x)),x) %*% (outcome0$coefficients)
+  pscore <- (1+exp(-(cbind(rep(1,nrow(x)),x) %*% (logistic.regression$coefficients))))^(-1)
+  
+  # Compute estimated E(Y(1))
+  miu1 <- mean(gamma1) + mean((d/pscore)*(y-gamma1))
+  
+  # Compute estimated E(Y(0))
+  miu0 <- mean(gamma0) + mean(((1-d)/(1-pscore))*(y-gamma0))
+  
+  # Compute estimated ATE
+  ate <- miu1 - miu0
+  
+  # Compile result into a list
+  result <- list(treat = treat, control = control, total = total, ate = ate)
+  return(result)
+}
+```
+
+```{r}
+# Data splitting into 12 groups
+# We use amount of working hours per week before training, i.e. bfhrswrk, and number of years of education before training, i.e. bfeduca to do the categorization
+
+# Since the combination of subgroup involves range, we splitted the data manually into 12 groups, and put into a list to iterate them easily.
+
+groups <- list(
+  group1 = jtpa[which((jtpa$bfhrswrk==0) & (jtpa$bfeduca<12)),],
+  group2 = jtpa[which((jtpa$bfhrswrk==0) & (jtpa$bfeduca==12)),],
+  group3 = jtpa[which((jtpa$bfhrswrk==0) & (jtpa$bfeduca>12)),],
+  group4 = jtpa[which((jtpa$bfhrswrk>0) & (jtpa$bfhrswrk<35) & (jtpa$bfeduca<12)),],
+  group5 = jtpa[which((jtpa$bfhrswrk>0) & (jtpa$bfhrswrk<35) & (jtpa$bfeduca==12)),],
+  group6 = jtpa[which((jtpa$bfhrswrk>0) & (jtpa$bfhrswrk<35) & (jtpa$bfeduca>12)),],
+  group7 = jtpa[which((jtpa$bfhrswrk>=35) & (jtpa$bfhrswrk<=40) & (jtpa$bfeduca<12)),],
+  group8 = jtpa[which((jtpa$bfhrswrk>=35) & (jtpa$bfhrswrk<=40) & (jtpa$bfeduca==12)),],
+  group9 = jtpa[which((jtpa$bfhrswrk>=35) & (jtpa$bfhrswrk<=40) & (jtpa$bfeduca>12)),],
+  group10 = jtpa[which((jtpa$bfhrswrk>40) & (jtpa$bfeduca<12)),],
+  group11 = jtpa[which((jtpa$bfhrswrk>40) & (jtpa$bfeduca==12)),],
+  group12 = jtpa[which((jtpa$bfhrswrk>40) & (jtpa$bfeduca>12)),]
+)
+
+# Initialize list to hold bfhrswk, bfeduca, treated, controlled and total units in each group
+hold.hrswk <- c("hours=0","0<hours<35","35<=hours<=40","40<hours")
+hold.bfeduca <- c("years<12","years=12","year>12")
+group.hrswk <- c()
+group.bfeduca <- c()
+
+# Get 12 combination of labels
+for (i in 1:length(hold.hrswk)){
+  for (j in 1:length(hold.bfeduca)){
+    group.hrswk <- c(group.hrswk,hold.hrswk[i])
+    group.bfeduca <- c(group.bfeduca,hold.bfeduca[j])
+  }
+}
+  
+hold.ATE <- c()
+track.treat <- c()
+track.control <- c()
+track.total <- c()
+
+# Estimate subgroup ATE with function
+for (k in 1:12){
+  result <- doubly.robust(groups[[k]])
+  hold.ATE <- c(hold.ATE, result$ate)
+  track.treat <- c(track.treat, result$treat)
+  track.control <- c(track.control, result$control)
+  track.total <- c(track.total, result$total)
+}
+
+# Collect them into a table
+final <- data.frame(bfhrswk = group.hrswk, bfeduca = group.bfeduca, no.treat = track.treat, no.control = track.control, total = track.total, ATE = hold.ATE, netATE = hold.ATE - 774)
+```
+
+\newpage
+```{r, results='asis', echo=FALSE}
+# Print the latex table
+print(xtable(final), include.rownames = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
